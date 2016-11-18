@@ -9,7 +9,7 @@
       <button version="1" id="Browse">
         <name>&lt;&lt;</name>
         <controller>120</controller>
-        <channel>2</channel>
+        <channel>0</channel>
         <off>0</off>
         <on>127</on>
         <behavior onIfDown="on">gate</behavior>
@@ -188,7 +188,7 @@
       <button version="1" id="Sampling">
         <name>&gt;&gt;</name>
         <controller>121</controller>
-        <channel>2</channel>
+        <channel>0</channel>
         <off>0</off>
         <on>127</on>
         <behavior onIfDown="on">gate</behavior>
@@ -495,7 +495,7 @@
         <wheel version="1" id="Dial">
           <name>Main</name>
           <controller mode="comp">84</controller>
-          <channel>1</channel>
+          <channel>0</channel>
           <min>0</min>
           <max>127</max>
           <default>0</default>
@@ -528,8 +528,8 @@
           <reaction>ondown</reaction>
         </button>
         <button version="1" id="Push">
-          <controller>87</controller>
-          <channel>1</channel>
+          <controller>85</controller>
+          <channel>0</channel>
           <off>0</off>
           <on>127</on>
           <behavior>gate</behavior>

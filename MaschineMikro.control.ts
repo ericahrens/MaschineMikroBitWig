@@ -9,10 +9,15 @@ host.defineMidiPorts(1, 1);
 host.addDeviceNameBasedDiscoveryPair(["Maschine Mikro MK2 In"],
 	["Maschine Mikro MK2 Out"])
 
+let __numTracks = 4
+let __numScenes = 4
+let __numSends = 8
+
 let __updateQueue = []
 let __actions = 0
 let __controllers: Controllers
-let __colorTable : ColorTable  = new ColorTable()
+let __modeHandler: GeneralModeHandler
+let __colorTable: ColorTable = new ColorTable()
 
 enum MIDI {
 	CC = 11,
@@ -21,6 +26,7 @@ enum MIDI {
 }
 
 function init(): void {
+
 	// Consider separate Noteins
 	let noteIn = host.getMidiInPort(0).createNoteInput("Maschine Mikro MK2 In",
 		"81????", "90????", "B1????", "D1????", "E1????", "A0????")
@@ -29,13 +35,9 @@ function init(): void {
 
 	let application = host.createApplication()
 	__controllers = new Controllers()
+	__modeHandler = new GeneralModeHandler(noteIn)
 
-	let noteView = new NoteView(noteIn)
-	let transport = new Transport()
-	let modeHandler = new GeneralModeHandler()
-
-	let trackView = host.createCursorTrack(null, 8, 8)
-
+	let transport = new TransportHandler()
 
 	host.scheduleTask(handleSurfaceUpdate, null, 1)
 	println(" ###### Maschine with Typescript ######## ")
@@ -70,28 +72,99 @@ function onMidi(status: number, data1: number, data2: number): void {
 	}
 }
 
+enum ModeType {
+	Pad, Step, Clip, Scene, Vu
+}
+
+interface MatrixMode {
+	active() : boolean
+	enter() : void
+	exit() : void
+	handleButtonEvent(button: ColorIndexButton, value: number) : void
+}
+
+interface ShiftResponder {
+	notifyShift(shiftDown: boolean) : void;
+}
+
+interface EncoderHandler {
+	handleEncoder(direction : number, pushDow: boolean) : void
+}
+
 class GeneralModeHandler {
-	private viewButton: Button
-	private padButton: Button
-	private scenButton: Button
-	private patternButton: Button
-	private groupButton: BasicColorButton
+	private viewButton: Button = __controllers.createButton(115)
+	private padButton: Button = __controllers.createButton(114)
+	private scenButton: Button = __controllers.createButton(112)
+	private patternButton: Button = __controllers.createButton(113)
+	private groupButton: BasicColorButton = __controllers.createBasicColorbutton(81)
+	private pushButton: Button = __controllers.createButton(85)
+	private encoder: Button = __controllers.createButton(84)
 
-	private shiftButton: Button
+	private shiftButton: Button = __controllers.createButton(80)
 
-	public shiftDown: boolean = false;
+	private modeType: ModeType = ModeType.Clip;
 
-	constructor() {
-		this.viewButton = __controllers.createButton(115)
-		this.shiftButton = __controllers.createButton(80)
-		this.padButton = __controllers.createButton(114)
-		this.scenButton = __controllers.createButton(112)
-		this.patternButton = __controllers.createButton(113)
-		this.groupButton = __controllers.createBasicColorbutton(81)
+	public shiftDown: boolean = false
+	public pushDown: boolean = false
+
+	private shiftResponders : Array<ShiftResponder> = [];
+	private encoderHandler : Array<EncoderHandler> = [];
+
+	private padMode : NoteView;
+
+	constructor(noteInput: NoteInput) {
+		let hostCursorTrack = host.createCursorTrack(null, 8, 8)
+		let hostTrackBank = host.createMainTrackBank(__numTracks,__numSends,__numScenes);
+
+		this.padMode = new NoteView(noteInput);
+
+		__controllers.setMatrixHandler((button, value) => { 
+			//println(`Button Event <${button.index},${button.row},${button.col}> = ${value}`)
+		});
+
+		this.encoder.setCallback((value, button) => {
+			let direction = value == 1 ? 1 : -1;
+			println(`Encoder Turn <${direction}> <${this.pushDown}>`)
+		});
+
+		this.pushButton.setCallback((value, button) => {
+			this.pushDown = value > 0
+		})
 
 		this.shiftButton.setCallback((value, button) => {
 			this.shiftDown = value > 0
 			button.sendValue(value)
+			for(let responder of this.shiftResponders) {
+				responder.notifyShift(this.shiftDown);
+			}
+		})
+
+		this.padButton.setCallback((value, button) => {
+			if (value > 0) {
+				this.modeType = ModeType.Pad
+				this.updateMode()
+			}
+		})
+
+		this.scenButton.setCallback((value, button) => {
+			if (value > 0) {
+				this.modeType = ModeType.Scene
+				this.updateMode()
+			}
+		})
+
+		this.patternButton.setCallback((value, button) => {
+			if (value > 0) {
+				this.modeType = ModeType.Clip
+				this.updateMode()
+			}
+		})
+
+		this.viewButton.setCallback((value, button) => {
+			if (value > 0) {
+				this.modeType = ModeType.Vu
+				this.updateMode()
+			}
 		})
 
 		this.groupButton.setCallback((value, button) => {
@@ -101,19 +174,71 @@ class GeneralModeHandler {
 				this.groupButton.sendValue(0)
 			}
 		})
+		this.updateMode();
+	}
+
+	addShiftResponder(responder: ShiftResponder) : void {
+		this.shiftResponders.push(responder)
+	}
+
+	updateMode(): void {
+		this.viewButton.sendValue(this.modeType == ModeType.Vu ? 127 : 0)
+		this.padButton.sendValue(this.modeType == ModeType.Pad ? 127 : 0)
+		this.scenButton.sendValue(this.modeType == ModeType.Scene ? 127 : 0)
+		this.patternButton.sendValue(this.modeType == ModeType.Clip ? 127 : 0)
 	}
 }
 
-class Transport {
-	private playButton: Button
+class TransportHandler implements ShiftResponder, EncoderHandler {
+	private playButton: Button = __controllers.createButton(108);
+	private recButton: Button = __controllers.createButton(109);
+	private transport: Transport = host.createTransport();
+
+	private playing: boolean = false;
+	private launchOverdub: boolean = false;
 
 	constructor() {
-		this.playButton = __controllers.createButton(108);
-
-
 		this.playButton.setCallback((value, button) => {
-			button.sendValue(value > 0 ? 127 : 0)
+			if (value === 0) {
+				return;
+			}
+			if (__modeHandler.shiftDown) {
+				this.transport.stop();
+			} else {
+				this.transport.play();
+			}
 		})
+
+		this.recButton.setCallback((value, button) => {
+			if (value == 0) {
+				return;
+			}
+			this.transport.toggleLauncherOverdub()
+		});
+
+		this.transport.addIsPlayingObserver((playing) => {
+			this.playing = playing;
+			if (playing) {
+				this.playButton.sendValue(127)
+			} else {
+				this.playButton.sendValue(0)
+			}
+		});
+
+		this.transport.addLauncherOverdubObserver((overdub) => {
+			this.launchOverdub = overdub;
+			this.recButton.sendValue(overdub ? 127 : 0)
+		});
+
+		__modeHandler.addShiftResponder(this)
+	}
+
+	handleEncoder(direction : number, pushDow: boolean) : void {
+		
+	}
+
+	notifyShift(shiftDown: boolean) : void {
+		println(`Got Shift <${shiftDown}>`);
 	}
 }
 
@@ -121,6 +246,7 @@ class Controllers {
 	private noteMapping = {}
 	private controls: { [ccNr: number]: Button } = {};
 	buttonMatrix: ButtonMatrix
+	private matrixHandler : (button: ColorIndexButton, value: number) => void
 
 	constructor() {
 		this.buttonMatrix = new ButtonMatrix(this, 12);
@@ -144,6 +270,10 @@ class Controllers {
 		}
 	}
 
+	setMatrixHandler(callback: (button: ColorIndexButton, value: number) => void)  {
+		this.matrixHandler = callback
+	}
+
 	handleMidi(status: number, data1: number, data2: number): boolean {
 		let channel = status & 0xF
 		let type = status >> 4
@@ -160,7 +290,10 @@ class Controllers {
 			case 0x9: // MIDI Note
 				if (data1 > 11 && data1 < 29) {
 					let index = data1 - 12
-					this.buttonMatrix.setColor(index, data2 > 0 ? 10 : 0)
+					if(this.matrixHandler) {
+						this.matrixHandler(this.buttonMatrix.getButton(index), data2);	
+					}
+					this.buttonMatrix.setColor(index, data2 > 0 ? 60 : 0)
 					return false
 				}
 				break;
@@ -174,18 +307,17 @@ interface Controller {
 	reset(): void
 }
 
-
 class ColorIndexButton {
 	private parent: ButtonMatrix
 	private lastvalue: number = 0
-	private index: number
-	private row: number
-	private col: number
+	readonly index: number
+	readonly row: number
+	readonly col: number
 	private base: number
 	private midistatus: number
 
 	constructor(parent: ButtonMatrix, index: number, base: number) {
-		this.index = 0
+		this.index = index
 		this.base = base;
 		this.col = this.index % 4
 		this.row = Math.floor(this.index / 4)
@@ -282,6 +414,10 @@ class ButtonMatrix {
 		for (let i = 0; i < 16; i++) {
 			this.buttons.push(new ColorIndexButton(this, i, basevalue + i))
 		}
+	}
+
+	getButton(index: number) : ColorIndexButton {
+		return this.buttons[index]
 	}
 
 	setColor(index: number, value: number): void {

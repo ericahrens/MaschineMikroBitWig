@@ -50,10 +50,7 @@ class ColorTable {
             return this._colorTable[lookupIndex];
         }
 
-        var hsb = this.rgbToHsb(rv, gv, bv);
-        var hue = hsb[0];
-        var sat = hsb[1];
-        var bright = hsb[2];
+        var [hue, sat, bright] = this.rgbToHsb(rv, gv, bv);
 
         if (bright < 1 || sat < 3) {
             println(lookupIndex + ": " + 68 + ",");

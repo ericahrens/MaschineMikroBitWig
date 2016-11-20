@@ -1,5 +1,9 @@
 let NoteStr: string[] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
+enum FlashState {
+    NONE, RECQUEUE, REC, QUEUED
+}
+
 class ColorTable {
 
     _fixColorTable: { [key: number]: number } = {

@@ -2,6 +2,9 @@
 loadAPI(1);
 load("NoteView.js")
 load("Constants.js")
+load("ClipView.js")
+load("VuView.js")
+load("ApplicationControl.js")
 
 host.defineController("Native Instruments", "Maschine Mikro MK2", "1.0",
 	"749beff0-f8d8-4e7f-8328-011625bd1b99", "Eric Ahrens")
@@ -9,6 +12,11 @@ host.defineMidiPorts(1, 1);
 host.addDeviceNameBasedDiscoveryPair(["Maschine Mikro MK2 In"],
 	["Maschine Mikro MK2 Out"])
 
+let Orientation = {
+    TrackBased : 0,
+	SceneBased : 1
+};
+ 
 let __numTracks = 4
 let __numScenes = 4
 let __numSends = 8
@@ -18,6 +26,9 @@ let __actions = 0
 let __controllers: Controllers
 let __modeHandler: GeneralModeHandler
 let __colorTable: ColorTable = new ColorTable()
+let __clipOrientation = Orientation.TrackBased
+let __currentMode: MatrixView
+let __applicationControl : ApplicationControl
 
 enum MIDI {
 	CC = 11,
@@ -31,17 +42,28 @@ function init(): void {
 	let noteIn = host.getMidiInPort(0).createNoteInput("Maschine Mikro MK2 In",
 		"81????", "90????", "B1????", "D1????", "E1????", "A0????")
 	host.getMidiInPort(0).setMidiCallback(onMidi)
+	host.getMidiInPort(0).setSysexCallback(onSysex);
 	noteIn.setShouldConsumeEvents(false)
 
-	let application = host.createApplication()
+	__applicationControl = new ApplicationControl()
 	__controllers = new Controllers()
+	__controllers.buttonMatrix.init()
+
 	__modeHandler = new GeneralModeHandler(noteIn)
 
 	let transport = new TransportHandler()
 
 	host.scheduleTask(handleSurfaceUpdate, null, 1)
 	println(" ###### Maschine with Typescript ######## ")
-	__controllers.buttonMatrix.init()
+	handleblink();
+}
+
+/**
+ * Task to handle Flashing
+ */
+function handleblink() {
+	__currentMode.blink();
+	host.scheduleTask(handleblink, null, 50);
 }
 
 function handleSurfaceUpdate(): void {
@@ -72,19 +94,24 @@ function onMidi(status: number, data1: number, data2: number): void {
 	}
 }
 
+function onSysex(data: string) {
+	println(`Received SysEx ${data}`)
+}
+
 enum ModeType {
 	Pad, Step, Clip, Scene, Vu
 }
 
-interface MatrixMode {
-	active() : boolean
+interface MatrixView extends ShiftResponder {
 	enter() : void
 	exit() : void
 	handleButtonEvent(button: ColorIndexButton, value: number) : void
+	blink() : void 
+	notifyMainKnob(direction: number, pushState: boolean) : void
 }
 
 interface ShiftResponder {
-	notifyShift(shiftDown: boolean) : void;
+	notifyShift(shiftDown: boolean) : void
 }
 
 interface EncoderHandler {
@@ -97,6 +124,7 @@ class GeneralModeHandler {
 	private scenButton: Button = __controllers.createButton(112)
 	private patternButton: Button = __controllers.createButton(113)
 	private groupButton: BasicColorButton = __controllers.createBasicColorbutton(81)
+	private eraseButton: Button = __controllers.createButton(110)
 	private pushButton: Button = __controllers.createButton(85)
 	private encoder: Button = __controllers.createButton(84)
 
@@ -106,29 +134,38 @@ class GeneralModeHandler {
 
 	public shiftDown: boolean = false
 	public pushDown: boolean = false
+	public eraseDown: boolean = false
 
 	private shiftResponders : Array<ShiftResponder> = [];
 	private encoderHandler : Array<EncoderHandler> = [];
 
-	private padMode : NoteView;
+	private padView : NoteView;
+	private clipView : ClipView;
+	private vuView : VuView;
 
 	constructor(noteInput: NoteInput) {
-		let hostCursorTrack = host.createCursorTrack(null, 8, 8)
+		let hostCursorTrack = host.createCursorTrack(null, 4, 8)
 		let hostTrackBank = host.createMainTrackBank(__numTracks,__numSends,__numScenes);
 
-		this.padMode = new NoteView(noteInput);
+		this.padView = new NoteView(noteInput);
+		this.clipView = new ClipView(hostTrackBank);
+		this.vuView = new VuView(hostTrackBank);
 
-		__controllers.setMatrixHandler((button, value) => { 
-			//println(`Button Event <${button.index},${button.row},${button.col}> = ${value}`)
-		});
+		__currentMode = this.clipView;
+		this.clipView.enter();
+		this.clipView.setIndication(true);
 
 		this.encoder.setCallback((value, button) => {
 			let direction = value == 1 ? 1 : -1;
-			println(`Encoder Turn <${direction}> <${this.pushDown}>`)
+			__currentMode.notifyMainKnob(direction, this.pushDown);
 		});
 
 		this.pushButton.setCallback((value, button) => {
 			this.pushDown = value > 0
+		})
+
+		this.eraseButton.setCallback((value, button) => {
+			this.eraseDown = value > 0
 		})
 
 		this.shiftButton.setCallback((value, button) => {
@@ -154,16 +191,22 @@ class GeneralModeHandler {
 		})
 
 		this.patternButton.setCallback((value, button) => {
-			if (value > 0) {
+			if (value > 0 && __currentMode != this.clipView) {
+				__currentMode.exit()
 				this.modeType = ModeType.Clip
 				this.updateMode()
+				__currentMode = this.clipView
+				__currentMode.enter()
 			}
 		})
 
 		this.viewButton.setCallback((value, button) => {
-			if (value > 0) {
+			if (value > 0 && __currentMode != this.vuView) {
+				__currentMode.exit()
 				this.modeType = ModeType.Vu
 				this.updateMode()
+				__currentMode = this.vuView
+				__currentMode.enter()
 			}
 		})
 
@@ -246,7 +289,7 @@ class Controllers {
 	private noteMapping = {}
 	private controls: { [ccNr: number]: Button } = {};
 	buttonMatrix: ButtonMatrix
-	private matrixHandler : (button: ColorIndexButton, value: number) => void
+	//private matrixHandler : (button: ColorIndexButton, value: number) => void
 
 	constructor() {
 		this.buttonMatrix = new ButtonMatrix(this, 12);
@@ -270,10 +313,6 @@ class Controllers {
 		}
 	}
 
-	setMatrixHandler(callback: (button: ColorIndexButton, value: number) => void)  {
-		this.matrixHandler = callback
-	}
-
 	handleMidi(status: number, data1: number, data2: number): boolean {
 		let channel = status & 0xF
 		let type = status >> 4
@@ -290,10 +329,8 @@ class Controllers {
 			case 0x9: // MIDI Note
 				if (data1 > 11 && data1 < 29) {
 					let index = data1 - 12
-					if(this.matrixHandler) {
-						this.matrixHandler(this.buttonMatrix.getButton(index), data2);	
-					}
-					this.buttonMatrix.setColor(index, data2 > 0 ? 60 : 0)
+					__currentMode.handleButtonEvent(this.buttonMatrix.getButton(index), data2);
+					//this.buttonMatrix.setColor(index, data2 > 0 ? 60 : 0)
 					return false
 				}
 				break;
